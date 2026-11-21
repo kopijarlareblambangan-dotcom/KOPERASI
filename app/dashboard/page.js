@@ -9,6 +9,41 @@ const JENIS = ['wajib', 'pokok', 'sukarela', 'penyertaan']
 const ALOKASI = [['Dana Cadangan', 30], ['Anggota (sebanding jasa usaha)', 50], ['Dana Pengurus & Pengawas', 10], ['Dana Pegawai / Karyawan', 5], ['Dana Sosial', 2.5], ['Dana Pendidikan Perkoperasian', 2.5]]
 const LABEL = { lr25: 'SHU Des 2025', nr25: 'Neraca Des 2025', lr26: 'SHU Jan–Jun 2026', nr26: 'Neraca Jan–Jun 2026' }
 
+async function ambilSemua(tabel, urut) {
+  let semua = [], dari = 0
+  for (;;) {
+    const { data, error } = await supabase.from(tabel).select('*').order(urut).range(dari, dari + 999)
+    if (error) throw error
+    semua = semua.concat(data)
+    if (data.length < 1000) return semua
+    dari += 1000
+  }
+}
+
+function hitung(jurnal, akun, per) {
+  const th = per.slice(0, 4), m = {}
+  akun.forEach(a => { m[a.kode] = { ...a, s: 0 } })
+  jurnal.filter(j => j.tanggal <= per).forEach(j => {
+    const a = m[j.akun_kode]
+    if (!a) return
+    const lr = ['pendapatan', 'beban'].includes(a.kelompok)
+    if (lr && j.tanggal.slice(0, 4) !== th) return
+    const v = Number(j.debet) - Number(j.kredit)
+    a.s += ['aktiva', 'beban'].includes(a.kelompok) ? v : -v
+  })
+  const by = k => Object.values(m).filter(a => a.kelompok === k && a.s !== 0)
+  const sum = l => l.reduce((x, a) => x + a.s, 0)
+  return { by, sum }
+}
+
+function Seksi({ judul, items, total, label }) {
+  return <>
+    <tr><td colSpan={2} className="sec">{judul}</td></tr>
+    {items.map(a => <tr key={a.kode}><td>{a.kode} — {a.nama}</td><td className="n">{rp(a.s)}</td></tr>)}
+    <tr className="tot"><td>{label}</td><td className="n">{rp(total)}</td></tr>
+  </>
+}
+
 export default function Dashboard() {
   const router = useRouter()
   const [me, setMe] = useState(null)
@@ -21,6 +56,9 @@ export default function Dashboard() {
   const [keg, setKeg] = useState([])
   const [users, setUsers] = useState([])
   const [shu, setShu] = useState(167673826)
+  const [akun, setAkun] = useState([])
+  const [jurnal, setJurnal] = useState([])
+  const [per, setPer] = useState(new Date().toISOString().slice(0, 10))
 
   const load = useCallback(async () => {
     const { data: { session } } = await supabase.auth.getSession()
@@ -32,6 +70,12 @@ export default function Dashboard() {
     if (a.error || s.error) setErr((a.error || s.error).message)
     setAnggota(a.data || [])
     setSimpanan(s.data || [])
+    if (p && p.peran !== 'anggota') {
+      try {
+        setAkun(await ambilSemua('akun', 'kode'))
+        setJurnal(await ambilSemua('jurnal', 'id'))
+      } catch (x) { setErr(x.message) }
+    }
     const l = await supabase.from('laporan_baris').select('*').order('urut')
     setLap(l.data || [])
     const k = await supabase.from('kegiatan').select('*').order('tanggal')
@@ -79,10 +123,27 @@ export default function Dashboard() {
     if (error) setErr(error.message); else { setErr(''); load() }
   }
 
+  async function tambahJurnal(e) {
+    e.preventDefault()
+    const f = new FormData(e.target)
+    if (f.get('d') === f.get('k')) return setErr('Akun debet dan kredit tidak boleh sama.')
+    const j = Number(f.get('jumlah')), tgl = f.get('tanggal')
+    const dasar = { tanggal: tgl, periode: tgl.slice(0, 7), keterangan: f.get('keterangan'), dibuat_oleh: me.uid }
+    const { error } = await supabase.from('jurnal').insert([
+      { ...dasar, akun_kode: f.get('d'), debet: j, kredit: 0 },
+      { ...dasar, akun_kode: f.get('k'), debet: 0, kredit: j }
+    ])
+    if (error) setErr(error.message); else { e.target.reset(); setErr(''); load() }
+  }
+
   async function keluar() { await supabase.auth.signOut(); router.replace('/') }
 
   const menu = [['beranda', 'Beranda'], ['laporan', 'Laporan Keuangan'], ['shu', 'Simulasi SHU'], ['anggota', 'Data Anggota'], ['simpanan', 'Simpanan'], ['kegiatan', 'Kegiatan']]
+  if (me.peran !== 'anggota') menu.splice(3, 0, ['jurnal', 'Jurnal'], ['otomatis', 'Laporan Otomatis'])
   if (me.peran === 'admin') menu.push(['pengguna', 'Pengguna'])
+  const H = view === 'otomatis' ? hitung(jurnal, akun, per) : null
+  const namaAkun = Object.fromEntries(akun.map(a => [a.kode, a.nama]))
+  const opsi = akun.map(a => <option key={a.kode} value={a.kode}>{a.kode} — {a.nama}</option>)
   const baris = lap.filter(r => r.kode === kode)
   const kodeAda = [...new Set(lap.map(r => r.kode))]
   const pct = (a, b) => (a ? ((b - a) / Math.abs(a) * 100).toFixed(1) + '%' : '–')
@@ -153,6 +214,48 @@ export default function Dashboard() {
             </table>}
           </div>
         </>}
+
+        {view === 'jurnal' && <>
+          <h1>Jurnal</h1>
+          <p className="mu">Setiap transaksi dicatat sebagai pasangan debet dan kredit, sehingga selalu seimbang.</p>
+          {bisaEdit && <form className="card f" onSubmit={tambahJurnal}>
+            <input name="tanggal" type="date" defaultValue={new Date().toISOString().slice(0, 10)} required />
+            <select name="d" required><option value="">Debet: pilih akun</option>{opsi}</select>
+            <select name="k" required><option value="">Kredit: pilih akun</option>{opsi}</select>
+            <input name="jumlah" type="number" min="1" placeholder="Jumlah (Rp)" required />
+            <input name="keterangan" placeholder="Keterangan" style={{ flex: 1, minWidth: 160 }} required />
+            <button className="b">Catat</button>
+          </form>}
+          <div className="card sc"><table>
+            <thead><tr><th>Tanggal</th><th>Akun</th><th className="n">Debet</th><th className="n">Kredit</th><th>Keterangan</th></tr></thead>
+            <tbody>{[...jurnal].sort((a, b) => b.tanggal.localeCompare(a.tanggal)).slice(0, 100).map(j => <tr key={j.id}><td>{j.tanggal}</td><td>{j.akun_kode} — {namaAkun[j.akun_kode]}</td><td className="n">{Number(j.debet) ? rp(j.debet) : ''}</td><td className="n">{Number(j.kredit) ? rp(j.kredit) : ''}</td><td>{j.keterangan}</td></tr>)}</tbody>
+          </table></div>
+          <p className="mu">Menampilkan 100 entri terbaru.</p>
+        </>}
+
+        {view === 'otomatis' && H && (() => {
+          const pend = H.by('pendapatan'), beb = H.by('beban'), shuB = H.sum(pend) - H.sum(beb)
+          const akt = H.by('aktiva'), kew = H.by('kewajiban'), eku = H.by('ekuitas')
+          const tA = H.sum(akt), tK = H.sum(kew), tE = H.sum(eku) + shuB
+          return <>
+            <h1>Laporan Otomatis</h1>
+            <p className="mu">Dihitung dari jurnal. Laba-rugi untuk tahun berjalan sampai tanggal di bawah, neraca kumulatif.</p>
+            <div className="card f"><span>Per tanggal</span><input type="date" value={per} onChange={e => setPer(e.target.value)} /><button className="b o" onClick={() => window.print()}>Cetak / PDF</button></div>
+            <div className="card sc"><table><tbody>
+              <Seksi judul="PENDAPATAN" items={pend} total={H.sum(pend)} label="Jumlah pendapatan" />
+              <Seksi judul="BEBAN" items={beb} total={H.sum(beb)} label="Jumlah beban" />
+              <tr className="tot"><td>SHU TAHUN BERJALAN (sebelum PPh jika belum dijurnal)</td><td className="n">{rp(shuB)}</td></tr>
+            </tbody></table></div>
+            <div className="card sc"><table><tbody>
+              <Seksi judul="AKTIVA" items={akt} total={tA} label="TOTAL AKTIVA" />
+              <Seksi judul="KEWAJIBAN" items={kew} total={tK} label="Jumlah kewajiban" />
+              <Seksi judul="KEKAYAAN BERSIH" items={[...eku, { kode: '—', nama: 'SHU tahun berjalan', s: shuB }]} total={tE} label="Jumlah kekayaan bersih" />
+              <tr className="tot"><td>TOTAL KEWAJIBAN & KEKAYAAN</td><td className="n">{rp(tK + tE)}</td></tr>
+            </tbody></table>
+            {tA - (tK + tE) !== 0 && <p className="err">Neraca belum seimbang (selisih {rp(tA - tK - tE)}). Periksa jurnal atau saldo awal.</p>}
+            </div>
+          </>
+        })()}
 
         {view === 'shu' && <>
           <h1>Simulasi Pembagian SHU</h1>
