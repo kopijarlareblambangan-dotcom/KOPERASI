@@ -24,3 +24,6 @@ input,select{font:inherit;padding:8px 10px;border:1px solid var(--bd);border-rad
 .lg{min-height:100vh;display:grid;place-items:center;padding:20px}
 .lg .card{max-width:400px;width:100%}.lg input{width:100%;margin-bottom:10px}
 @media(max-width:800px){.app{flex-direction:column}aside{width:auto;height:auto;flex-direction:row;overflow-x:auto;z-index:5}aside .br,.me{display:none}main{padding:16px}}
+.sec{background:var(--pr2);font-weight:700;color:var(--pr)}.tot td{font-weight:700;border-top:2px solid var(--pr)}
+.b.o{background:var(--sf);color:var(--tx);border:1px solid var(--bd)}
+@media print{aside{display:none}}
